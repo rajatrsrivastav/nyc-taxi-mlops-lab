@@ -1,0 +1,64 @@
+# S0 CD: after CI succeeds on main, deploy the new image on the app host and smoke-test /version.
+# Runs on the self-hosted runner (label lab-app) with the host's instance profile (decision 001).
+# Triggered by workflow_run, never by pull_request (AGENTS.md rule 4).
+name: cd
+
+on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: cd-app
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: [self-hosted, lab-app]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
+      - uses: docker/login-action@v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Resolve image tag
+        id: img
+        env:
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          echo "tag=sha-${SHA::7}" >> "$GITHUB_OUTPUT"
+      - name: Deploy
+        run: |
+          export IMAGE_PREFIX="ghcr.io/${GITHUB_REPOSITORY,,}"
+          export IMAGE_TAG="${{ steps.img.outputs.tag }}"
+          docker compose -f deploy/compose.app.yaml pull
+          docker compose -f deploy/compose.app.yaml up -d --wait --remove-orphans
+      - name: Smoke test
+        shell: bash
+        env:
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          for _retry in $(seq 1 15); do
+            if curl -fsS --max-time 5 http://127.0.0.1/version |
+              jq -e --arg sha "$SHA" --arg tag "sha-${SHA::7}" '.git_sha == $sha and .image_tag == $tag'; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "The app did not report the expected commit and image tag" >&2
+          exit 1
