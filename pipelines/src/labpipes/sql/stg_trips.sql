@@ -20,7 +20,7 @@ create table if not exists staging.stg_trips (
   payment_type    integer,
   fare_amount     double precision,
   total_amount    double precision
-) sortkey (pickup_at);
+) diststyle auto sortkey (pickup_at);
 delete from staging.stg_trips where trip_month = '{month}';
 insert into staging.stg_trips
 select '{month}', source_file, vendorid, tpep_pickup_datetime, tpep_dropoff_datetime,

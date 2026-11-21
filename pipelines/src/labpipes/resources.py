@@ -106,6 +106,11 @@ class TripFile:
     key: str
     etag: str
     size: int
+    last_modified: str = ""
+
+    @property
+    def revision(self) -> str:
+        return f"{self.etag}:{self.size}:{self.last_modified}"
 
 
 @dataclass(frozen=True)
@@ -131,8 +136,14 @@ class DataBucket(dg.ConfigurableResource):
             for o in page.get("Contents", []):
                 m = TRIP_FILE.fullmatch(o["Key"][len(self.trips_prefix) :])
                 if m:
-                    found.append(TripFile(m["month"], o["Key"], o["ETag"].strip('"'), o["Size"]))
+                    found.append(TripFile(m["month"], o["Key"], o["ETag"].strip('"'), o["Size"], o["LastModified"].isoformat()))
         return sorted(found, key=lambda f: f.month)
+
+    def trip_file(self, month: str) -> TripFile:
+        key = self.trip_uri(month).removeprefix(f"s3://{self.bucket}/")
+        s3 = boto3.client("s3", region_name=self.region)
+        obj = s3.head_object(Bucket=self.bucket, Key=key)
+        return TripFile(month, key, obj["ETag"].strip('"'), obj["ContentLength"], obj["LastModified"].isoformat())
 
     def trip_uri(self, month: str) -> str:
         return f"s3://{self.bucket}/{self.trips_prefix}yellow_tripdata_{check_month(month)}.parquet"

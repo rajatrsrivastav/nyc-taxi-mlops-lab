@@ -48,6 +48,9 @@ class FakeBucket(DataBucket):
     def trip_files(self) -> list[TripFile]:
         return [TripFile(m, f"trips/yellow_tripdata_{m}.parquet", f[0], 1) for m, f in sorted(self.files.items())]
 
+    def trip_file(self, month: str) -> TripFile:
+        return next(f for f in self.trip_files() if f.month == month)
+
     def footer(self, month: str) -> Footer:
         cols = [Column(n, t) for n, t in self.files[month][1]]
         return read_footer(pa.BufferReader(parquet_bytes(cols)))
