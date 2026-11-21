@@ -35,7 +35,7 @@ def schema_contract(
     actual = normalized_schema(footer.columns)
     matches = actual == expected
     if not matches:
-        redshift.execute(*replace_quality_status(month, context.run.run_id, "rejected"))
+        redshift.execute(*replace_quality_status(redshift, month, context.run.run_id, "rejected"))
     return dg.AssetCheckResult(
         passed=matches,
         description="Ordered Parquet columns match." if matches else "Ordered Parquet columns differ from the contract.",

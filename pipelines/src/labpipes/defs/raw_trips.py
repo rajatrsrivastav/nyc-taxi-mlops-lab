@@ -21,7 +21,7 @@ def raw_trips(
     trip_file, footer = read_current_footer(data_bucket, month, context.run.tags.get(REVISION_TAG))
     # Also enforce the schema for raw-only materializations that omit the Dagster check.
     if normalized_schema(footer.columns) != normalized_schema(expected):
-        redshift.execute(*replace_quality_status(month, run_id, "rejected"))
+        redshift.execute(*replace_quality_status(redshift, month, run_id, "rejected"))
         raise dg.Failure("Parquet schema differs from the contract. COPY was not attempted.")
 
     # COPY treats an S3 URL as a prefix. The manifest restricts it to the checked object.
@@ -41,10 +41,10 @@ def raw_trips(
         f"copy month_copy from '{manifest_uri}' iam_role default format as parquet manifest",
         f"delete from ingest.raw_trips where source_file = '{file}'",
         f"insert into ingest.raw_trips select month_copy.*, '{file}' from month_copy",
-        *replace_quality_status(month, run_id, "loaded"),
+        *replace_quality_status(redshift, month, run_id, "loaded"),
     )
     rows = int(redshift.scalar(f"select count(*) from ingest.raw_trips where source_file = '{file}'"))
     if data_bucket.trip_file(month).revision != trip_file.revision or rows != footer.num_rows:
-        redshift.execute(*replace_quality_status(month, run_id, "rejected"))
+        redshift.execute(*replace_quality_status(redshift, month, run_id, "rejected"))
         raise dg.Failure("COPY did not match the checked object revision or footer row count.")
     return dg.MaterializeResult(metadata={"rows": rows, "source_file": file, "revision": trip_file.revision})
