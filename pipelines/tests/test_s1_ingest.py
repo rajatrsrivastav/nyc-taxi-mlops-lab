@@ -12,7 +12,7 @@ from labpipes.defs.marts import zone_hour_stats
 from labpipes.defs.quality import RATE_METRICS, QualityPolicy, quality_outcomes, staging_quality
 from labpipes.defs.raw_trips import raw_trips
 from labpipes.defs.schema_check import schema_contract
-from labpipes.defs.sensor import ingest_trips, trip_files_sensor
+from labpipes.defs.sensor import trip_files_sensor
 from labpipes.defs.staging import stg_trips
 from labpipes.defs.trip_files import trip_files
 from labpipes.defs.zones import taxi_zones
@@ -88,10 +88,13 @@ def warehouse(monkeypatch):
 
 def run_month(warehouse, month=JAN, columns=None, limits=None, *, etag="a", tags=None):
     bucket = fake_bucket({month: (etag, trips_schema() if columns is None else columns)})
+    assets = [taxi_zones, trip_files, raw_trips, stg_trips, zone_hour_stats]
+    # Exercise the S1 subgraph in isolation, including measurement-only policy overrides.
+    ingest_s1 = dg.define_asset_job("ingest_s1", selection=dg.AssetSelection.assets(*assets))
     defs = dg.Definitions(
-        assets=[taxi_zones, trip_files, raw_trips, stg_trips, zone_hour_stats],
+        assets=assets,
         asset_checks=[schema_contract, staging_quality],
-        jobs=[ingest_trips],
+        jobs=[ingest_s1],
         resources={"data_bucket": bucket, "redshift": warehouse, "artifacts": MemoryArtifacts(bucket="artifacts")},
     )
     config = {}
@@ -101,7 +104,7 @@ def run_month(warehouse, month=JAN, columns=None, limits=None, *, etag="a", tags
         }}}}
     with dg.DagsterInstance.ephemeral() as instance:
         instance.add_dynamic_partitions(trip_months.name, [month])
-        return defs.resolve_job_def("ingest_trips").execute_in_process(
+        return defs.resolve_job_def("ingest_s1").execute_in_process(
             instance=instance, partition_key=month, run_config=config, tags=tags, raise_on_error=False
         )
 

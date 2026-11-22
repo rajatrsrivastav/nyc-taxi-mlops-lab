@@ -10,7 +10,7 @@ from ..warehouse import REVISION_TAG
 
 ingest_trips = dg.define_asset_job(
     "ingest_trips",
-    selection=dg.AssetSelection.assets("taxi_zones", "trip_files", "raw_trips", "stg_trips", "zone_hour_stats"),
+    selection=dg.AssetSelection.assets("taxi_zones", "trip_files", "raw_trips", "stg_trips", "zone_hour_stats", "trip_features"),
 )
 
 
