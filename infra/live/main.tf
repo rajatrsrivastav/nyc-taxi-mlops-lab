@@ -86,3 +86,10 @@ module "wiki_secret" {
   name        = "lab/wiki"
   description = "Wiki URL and token for the assistant (S7)"
 }
+
+# Grafana credentials are written out of band. Terraform manages only the container.
+module "grafana_secret" {
+  source      = "../modules/secret"
+  name        = "lab/grafana"
+  description = "Grafana Cloud metrics and rules credentials (S5)"
+}

@@ -15,6 +15,11 @@ on:
       - "deploy/compose.observability.yaml"
       - ".github/workflows/observability.yaml"
   workflow_dispatch:
+    inputs:
+      load_rules:
+        description: Load the reviewed SLO rules into Grafana Cloud
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -25,10 +30,12 @@ concurrency:
 
 jobs:
   check:
-    if: vars.LAB_OBSERVABILITY == 'on'
+    if: vars.LAB_OBSERVABILITY == 'on' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
       - name: promtool on the rules and their tests
         run: observability/push-rules.sh --check-only
 
@@ -43,6 +50,8 @@ jobs:
       LAB_HOST: ${{ matrix.host }}
     steps:
       - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
       - name: Deploy Alloy
         run: |
           docker network inspect lab >/dev/null 2>&1 || docker network create lab >/dev/null
@@ -58,9 +67,12 @@ jobs:
             { docker logs --tail 30 lab-obs-alloy-1 2>&1 | grep -E 'level=(error|warn)' >&2; exit 1; }
 
   rules:
+    if: github.event_name == 'push' || inputs.load_rules
     needs: check
     runs-on: [self-hosted, lab-app]
     steps:
       - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
       - name: Load the rules into Grafana Cloud
         run: observability/push-rules.sh
