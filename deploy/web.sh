@@ -18,7 +18,7 @@ cd "$(dirname "$0")/.."
 
 VOLUME=lab-traefik NETWORK=lab
 BUSYBOX=busybox:1.37.0
-WEB=http://localhost:${HTTP_PORT:-80}
+SMOKE=http://127.0.0.1:8001
 
 vol() { docker run --rm -i -v "$VOLUME:/d" "$BUSYBOX" "$@"; }
 
@@ -52,12 +52,20 @@ case ${1:-help} in
     ;;
   prepare)
     "$0" init
-    docker compose -f deploy/compose.web.yaml --profile secrets run --rm --quiet-pull app-secrets
+    if [[ "${PREPARE_APP_SECRETS:-1}" == 1 ]]; then
+      docker compose -f deploy/compose.web.yaml --profile secrets run --rm --quiet-pull app-secrets
+    fi
     TRAEFIK_CONFIG_HASH=$(sha256sum deploy/traefik/web/traefik.yaml | cut -c1-12) \
       docker compose -f deploy/compose.web.yaml up -d --no-deps traefik
     ;;
   live)
-    vol cat /d/app-live.color 2>/dev/null || echo none
+    if vol test -f /d/app-live.yaml; then
+      live=$(vol cat /d/app-live.yaml | sed -n 's/.*name: app-\(blue\|green\), weight: 100}.*/\1/p')
+      colour "$live"
+      echo "$live"
+    else
+      echo none
+    fi
     ;;
   tag)
     colour "${2:-}"
@@ -66,14 +74,18 @@ case ${1:-help} in
     ;;
   smoke)
     colour "${2:-}"
-    v=$(curl -fsS --retry 20 --retry-all-errors --retry-delay 3 -H "X-Lab-Color: $2" $WEB/version)
+    v=$(curl -fsS --retry 20 --retry-all-errors --retry-delay 3 -H "X-Lab-Color: $2" "$SMOKE"/version)
     echo "$2 /version: $v"
     if [[ -n "${3:-}" ]] && ! jq -e --arg sha "$3" '.git_sha == $sha' <<<"$v" >/dev/null; then
       echo "$2 runs $(jq -r .git_sha <<<"$v"), expected $3" >&2
       exit 1
     fi
-    p=$(curl -fsS -H "X-Lab-Color: $2" -H 'Content-Type: application/json' $WEB/predict \
+    p=$(curl -fsS -H "X-Lab-Color: $2" -H 'Content-Type: application/json' "$SMOKE"/predict \
       -d '{"pickup_zone_id": 132, "dropoff_zone_id": 230, "pickup_datetime": "2024-03-08T17:05:00"}')
+    jq -e '(.duration_minutes | type == "number" and . > 0) and (.model.name | type == "string")' <<<"$p" >/dev/null
+    code=$(curl -sS -o /dev/null -w '%{http_code}' -H "X-Lab-Color: $2" -H 'Content-Type: application/json' "$SMOKE/predict" \
+      -d '{"pickup_zone_id": 264, "dropoff_zone_id": 230, "pickup_datetime": "2024-03-08T17:05:00"}')
+    [[ "$code" == 422 ]]
     echo "$2 /predict: $p"
     ;;
   switch)
@@ -90,7 +102,6 @@ http:
           - {name: app-$2, weight: 100}
           - {name: app-$other, weight: 0}
 EOF
-    echo "$2" | write app-live.color
     echo "app traffic -> $2 ($other keeps running)"
     ;;
   serving-weights)
@@ -120,7 +131,7 @@ EOF
       out=$(serving "$1" GET /model 5 2>/dev/null) || true
       jq -c 'if .version then {version, alias, loaded_at} else {error: (.detail // "no answer")} end' <<<"${out:-{\}}" 2>/dev/null || echo '{"error": "no answer"}'
     }
-    sha() { curl -fsS -m 5 -H "X-Lab-Color: $1" "$WEB/version" 2>/dev/null | jq -r '.git_sha // "none"' 2>/dev/null || echo none; }
+    sha() { curl -fsS -m 5 -H "X-Lab-Color: $1" "$SMOKE/version" 2>/dev/null | jq -r '.git_sha // "none"' 2>/dev/null || echo none; }
     weight() { vol cat /d/serving-live.yaml 2>/dev/null | sed -n "s/.*name: serving-$1, weight: \([0-9]*\).*/\1/p"; }
     jq -n --arg live "$("$0" live)" --arg blue "$("$0" tag blue)" --arg green "$("$0" tag green)" \
       --arg blue_sha "$(sha blue)" --arg green_sha "$(sha green)" \

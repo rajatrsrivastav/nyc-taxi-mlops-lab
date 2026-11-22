@@ -50,3 +50,16 @@ def test_falls_back_to_the_static_median(serving, handler):
     serving(handler)
     body = TestClient(m.app).post("/predict", json=REQ).json()
     assert body["model"]["name"] == "static-median" and body["duration_minutes"] == m.STATIC_MEDIAN_MINUTES
+
+
+@pytest.mark.parametrize("reply", [
+    {"duration_minutes": -1, "model": {"name": "trip-duration", "version": "1", "alias": "champion"}},
+    {"duration_minutes": "NaN", "model": {"name": "trip-duration", "version": "1", "alias": "champion"}},
+    {"duration_minutes": 20, "model": {"name": "trip-duration", "version": "1", "alias": "unknown"}},
+    {"duration_minutes": 20, "model": None},
+])
+def test_invalid_serving_reply_preserves_fallback(serving, reply):
+    serving(lambda r: httpx2.Response(200, json=reply))
+    response = TestClient(m.app).post("/predict", json=REQ)
+    assert response.status_code == 200
+    assert response.json() == m.STATIC.model_dump()

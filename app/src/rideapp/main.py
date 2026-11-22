@@ -10,6 +10,7 @@ From S5, /metrics serves contracts/metrics.yaml's app metrics (Docker network on
 import os
 import time
 from datetime import datetime
+from typing import Literal
 from zoneinfo import ZoneInfo
 
 import httpx2
@@ -39,9 +40,19 @@ class ModelInfo(BaseModel):
     alias: str | None = None
 
 
+class ServingModelInfo(ModelInfo):
+    name: Literal["trip-duration"]
+    version: str = Field(pattern=r"^[1-9][0-9]*$")
+    alias: Literal["champion", "challenger"]
+
+
 class PredictResponse(BaseModel):
-    duration_minutes: float
+    duration_minutes: float = Field(gt=0, allow_inf_nan=False)
     model: ModelInfo
+
+
+class ServingPrediction(PredictResponse):
+    model: ServingModelInfo
 
 
 app = FastAPI(title="Ride app", version="1.0.0")
@@ -126,15 +137,14 @@ async def predict(req: PredictRequest) -> PredictResponse:
     try:
         r = await serving_client().post(f"{url.rstrip('/')}/predict", json=features(req))
         if r.status_code == 200:
-            body = r.json()
-            answer = PredictResponse(duration_minutes=body["duration_minutes"], model=ModelInfo(**body["model"]))
+            answer = ServingPrediction.model_validate(r.json())
             outcome = "ok"
             PREDICTIONS.labels("model", answer.model.alias or "", answer.model.version).inc()
             return answer
         outcome = "unavailable" if r.status_code == 503 else "error"
     except httpx2.TimeoutException:
         outcome = "timeout"
-    except (httpx2.HTTPError, ValueError, KeyError):
+    except (httpx2.HTTPError, ValueError):
         pass
     finally:
         SERVING_CALLS.labels(outcome).observe(time.perf_counter() - start)

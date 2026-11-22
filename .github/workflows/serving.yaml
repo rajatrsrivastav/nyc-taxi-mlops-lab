@@ -24,7 +24,7 @@ concurrency:
 
 jobs:
   test:
-    if: vars.LAB_SERVING == 'on'
+    if: vars.LAB_SERVING == 'on' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7.0.1
@@ -69,6 +69,7 @@ jobs:
 
   deploy:
     needs: image
+    if: github.ref == 'refs/heads/main'
     runs-on: [self-hosted, lab-app]
     permissions:
       contents: read
@@ -78,32 +79,48 @@ jobs:
       MLFLOW_TRACKING_URI: ${{ vars.MLFLOW_TRACKING_URI }}
     steps:
       - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
       - uses: docker/login-action@v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Deploy both aliases
+      - name: Deploy and verify both aliases
         run: |
           export IMAGE_PREFIX="ghcr.io/${GITHUB_REPOSITORY,,}"
-          deploy/web.sh init  # not prepare: Traefik is your CD's, and may still be S0's
+          exec 9>"$HOME/.lab-app-deploy.lock"
+          flock -w 600 9
+          deploy/web.sh init
           docker compose -f deploy/compose.serving.yaml pull
           docker compose -f deploy/compose.serving.yaml up -d --wait
-      - name: What serving has loaded
-        # Asked inside each container: Traefik's port 8001 only exists once your CD runs the S3 stack.
-        # 503 before the first promotion is expected: there is no champion yet.
-        run: |
           for alias in champion challenger; do
-            docker exec "lab-serving-serving-$alias-1" python -c '
-          import time, urllib.error, urllib.request
-          for _ in range(20):
+            docker exec -i "lab-serving-serving-$alias-1" python - "$alias" <<'PY'
+          import json
+          import sys
+          import time
+          import urllib.error
+          import urllib.request
+
+          from mlflow import MlflowClient
+
+          alias = sys.argv[1]
+          expected = MlflowClient().get_registered_model("trip-duration").aliases.get(alias)
+          if expected is None and alias != "champion":
+              raise SystemExit("The evaluated challenger alias is missing.")
+          for _ in range(30):
               try:
-                  print(urllib.request.urlopen("http://localhost:8001/model").read().decode()); break
-              except urllib.error.HTTPError as e:
-                  body = e.read().decode()
-                  if "not found" in body: print(body); break
-                  time.sleep(3)
+                  with urllib.request.urlopen("http://127.0.0.1:8001/model", timeout=3) as response:
+                      loaded = json.load(response)
+                  if expected is not None and loaded["alias"] == alias and loaded["version"] == str(expected):
+                      print(f"{alias} v{expected} verified")
+                      break
+              except urllib.error.HTTPError as error:
+                  if error.code == 503 and expected is None:
+                      print("Champion is unset; 503 verified")
+                      break
+              time.sleep(2)
           else:
-              print(body)' > "/tmp/$alias.json"
-            echo "$alias: $(cat "/tmp/$alias.json")"
+              raise SystemExit(f"{alias} serving does not match the MLflow registry")
+          PY
           done

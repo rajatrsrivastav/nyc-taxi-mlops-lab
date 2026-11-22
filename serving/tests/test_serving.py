@@ -140,3 +140,20 @@ def test_metrics_follow_the_contract_and_the_loaded_version(registry, monkeypatc
     assert reloads["changed"] == 2.0 and reloads["unchanged"] >= 1.0 and "failed" not in reloads
     versions = {x.labels["version"] for x in families["lab_model_predict_duration_seconds"].samples if x.name.endswith("_count")}
     assert versions == {v1, v2}
+
+
+def test_failed_warmup_preserves_previous_model(registry, monkeypatch):
+    v1, v2 = register(3.0), register(6.0)
+    registry.set_registered_model_alias("trip-duration", "champion", v1)
+    m = serving(monkeypatch)
+    with TestClient(m.app) as c:
+        m.server.load_until_available()
+        registry.set_registered_model_alias("trip-duration", "champion", v2)
+
+        class BrokenModel:
+            def predict(self, _frame):
+                return [float("nan")]
+
+        monkeypatch.setattr(m.mlflow.pyfunc, "load_model", lambda _uri: BrokenModel())
+        assert c.post("/reload").status_code == 503
+        assert c.post("/predict", json=REQ).json()["model"]["version"] == v1

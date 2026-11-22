@@ -7,29 +7,29 @@ http:
       rule: PathPrefix(`/`) && !PathPrefix(`/metrics`)
       entryPoints: [web]
       service: app-live
-    # Pin a request to one colour (smoke tests before a switch): curl -H 'X-Lab-Color: green' ...
+    # Pin a request to one colour (smoke tests before a switch): curl -H 'X-Lab-Color: green' http://127.0.0.1:8001/version
     app-blue:
       rule: Header(`X-Lab-Color`, `blue`) && !PathPrefix(`/metrics`)
-      entryPoints: [web]
+      entryPoints: [serving]
       service: app-blue
       priority: 100
     app-green:
       rule: Header(`X-Lab-Color`, `green`) && !PathPrefix(`/metrics`)
-      entryPoints: [web]
+      entryPoints: [serving]
       service: app-green
       priority: 100
     serving:
-      rule: PathPrefix(`/`)
+      rule: (Path(`/healthz`) || Path(`/model`) || Path(`/predict`))
       entryPoints: [serving]
       service: serving-live
     # Pin a request to one alias: curl -H 'X-Lab-Alias: challenger' http://127.0.0.1:8001/model
     serving-champion:
-      rule: Header(`X-Lab-Alias`, `champion`)
+      rule: Header(`X-Lab-Alias`, `champion`) && (Path(`/healthz`) || Path(`/model`) || Path(`/predict`))
       entryPoints: [serving]
       service: serving-champion
       priority: 100
     serving-challenger:
-      rule: Header(`X-Lab-Alias`, `challenger`)
+      rule: Header(`X-Lab-Alias`, `challenger`) && (Path(`/healthz`) || Path(`/model`) || Path(`/predict`))
       entryPoints: [serving]
       service: serving-challenger
       priority: 100

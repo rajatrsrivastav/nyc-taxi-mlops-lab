@@ -1,4 +1,4 @@
-# S0 CD: after CI succeeds on main, deploy the new image on the app host and smoke-test /version.
+# After CI succeeds on main, smoke-test the idle app colour and switch traffic.
 # Runs on the self-hosted runner (label lab-app) with the host's instance profile (decision 001).
 # Triggered by workflow_run, never by pull_request (AGENTS.md rule 4).
 name: cd
@@ -8,10 +8,12 @@ on:
     workflows: [ci]
     types: [completed]
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
   packages: read
+  actions: read
 
 concurrency:
   group: cd-app
@@ -20,45 +22,40 @@ concurrency:
 jobs:
   deploy:
     if: >-
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'push' &&
-      github.event.workflow_run.head_branch == 'main' &&
-      github.event.workflow_run.head_repository.full_name == github.repository
+      vars.LAB_BLUE_GREEN == 'on' &&
+      ((github.event_name == 'workflow_run' &&
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_branch == 'main' &&
+        github.event.workflow_run.head_sha == github.sha &&
+        github.event.workflow_run.head_repository.full_name == github.repository) ||
+       (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'))
     runs-on: [self-hosted, lab-app]
-    timeout-minutes: 10
+    timeout-minutes: 25
+    env:
+      SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
     steps:
+      - name: Verify push CI before manual cutover
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          printf 'header = "Authorization: Bearer %s"\n' "$GH_TOKEN" |
+            curl -fsS --max-time 20 --config - \
+              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/workflows/ci.yaml/runs?head_sha=$SHA&event=push&branch=main&status=success" |
+            jq -e --arg sha "$SHA" --arg repo "$GITHUB_REPOSITORY" 'any(.workflow_runs[];
+              .head_sha==$sha and .event=="push" and .head_branch=="main"
+              and .head_repository.full_name==$repo and .conclusion=="success")'
       - uses: actions/checkout@v7.0.1
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: ${{ env.SHA }}
           persist-credentials: false
       - uses: docker/login-action@v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Resolve image tag
-        id: img
-        env:
-          SHA: ${{ github.event.workflow_run.head_sha }}
-        run: |
-          echo "tag=sha-${SHA::7}" >> "$GITHUB_OUTPUT"
-      - name: Deploy
+      - name: Deploy and verify the idle colour
         run: |
           export IMAGE_PREFIX="ghcr.io/${GITHUB_REPOSITORY,,}"
-          export IMAGE_TAG="${{ steps.img.outputs.tag }}"
-          docker compose -f deploy/compose.app.yaml pull
-          docker compose -f deploy/compose.app.yaml up -d --wait --remove-orphans
-      - name: Smoke test
-        shell: bash
-        env:
-          SHA: ${{ github.event.workflow_run.head_sha }}
-        run: |
-          for _retry in $(seq 1 15); do
-            if curl -fsS --max-time 5 http://127.0.0.1/version |
-              jq -e --arg sha "$SHA" --arg tag "sha-${SHA::7}" '.git_sha == $sha and .image_tag == $tag'; then
-              exit 0
-            fi
-            sleep 2
-          done
-          echo "The app did not report the expected commit and image tag" >&2
-          exit 1
+          deploy/app-colours.sh deploy "$SHA"

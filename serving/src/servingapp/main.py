@@ -8,6 +8,7 @@ From S5, /metrics serves contracts/metrics.yaml's serving metrics.
 """
 
 import logging
+import math
 import os
 import threading
 import time
@@ -66,7 +67,9 @@ class Server:
                 previous = self.current.version if self.current else None
                 if previous != version:
                     model = mlflow.pyfunc.load_model(f"models:/{MODEL_NAME}/{version}")
-                    model.predict(pd.DataFrame([[132, 230, 17, 5]], columns=INPUTS))  # warm up before taking traffic
+                    minutes = float(model.predict(pd.DataFrame([[132, 230, 17, 5]], columns=INPUTS))[0])
+                    if not math.isfinite(minutes) or minutes <= 0:
+                        raise ValueError("Model warmup returned an invalid duration")
                     self.current = Loaded(model, version, dict(mv.tags))
                     MODEL_INFO.clear()
                     MODEL_INFO.labels(ALIAS, version).set(1)
@@ -142,6 +145,8 @@ def predict(req: PredictRequest) -> dict:
         row["est_distance_miles"] = float(req.est_distance_miles)
     minutes = float(m.model.predict(row)[0])
     PREDICT_SECONDS.labels(ALIAS, m.version).observe(time.perf_counter() - start)
+    if not math.isfinite(minutes):
+        raise HTTPException(503, "Model returned an invalid duration")
     return {"duration_minutes": round(max(minutes, 0.5), 2), "model": {"name": MODEL_NAME, "version": m.version, "alias": ALIAS}}
 
 

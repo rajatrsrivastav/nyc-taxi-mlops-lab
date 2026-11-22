@@ -1,0 +1,61 @@
+name: promote
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Evaluated trip-duration model version to make champion
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  protection:
+    if: github.ref == 'refs/heads/main' && github.run_attempt == '1'
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REVIEWER: ${{ github.repository_owner_id }}
+      VERSION: ${{ inputs.version }}
+    steps:
+      - name: Verify configured production reviewer
+        run: |
+          [[ "$VERSION" =~ ^[1-9][0-9]*$ ]]
+          gh api "repos/$GITHUB_REPOSITORY/environments/production" |
+            jq -e --arg id "$REVIEWER" 'any(.protection_rules[]; .type=="required_reviewers" and
+              any(.reviewers[]; .type=="User" and (.reviewer.id|tostring)==$id))'
+
+  promote:
+    needs: protection
+    if: github.ref == 'refs/heads/main' && github.run_attempt == '1'
+    environment: production
+    runs-on: [self-hosted, lab-app]
+    timeout-minutes: 20
+    env:
+      REVIEWER: ${{ github.repository_owner_id }}
+      VERSION: ${{ inputs.version }}
+    steps:
+      - name: Verify approval of this run before checkout
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          printf 'header = "Authorization: Bearer %s"\n' "$GH_TOKEN" |
+            curl -fsS --max-time 20 --config - -H 'Accept: application/vnd.github+json' \
+              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/approvals" |
+            jq -e --arg id "$REVIEWER" 'any(.[]; .state=="approved" and (.user.id|tostring)==$id
+              and any(.environments[]; .name=="production"))'
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - id: apply
+        run: deploy/promote.sh "$VERSION"
+      - uses: actions/upload-artifact@v7.0.2
+        if: always() && steps.apply.outcome != 'skipped' && steps.apply.outcome != ''
+        with:
+          name: promotion-result
+          path: promotion-result.json
+          if-no-files-found: ignore
+          retention-days: 14
